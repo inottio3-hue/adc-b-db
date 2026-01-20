@@ -158,34 +158,38 @@ if st.sidebar.button("データ取得"):
 
                 # --- フィルタリング ---
                 st.markdown("### 🔍 フィルタリング")
+                # フィルタ用のリストはdisplay_dfから取る（フィルタ済みの選択肢でOK）
                 all_campaign_names = display_df['キャンペーン名'].unique()
                 selected_campaigns = st.multiselect("キャンペーン名で絞り込み", options=all_campaign_names)
+                
+                # テーブル表示用のDFだけフィルタを適用する
+                table_display_df = display_df.copy()
                 if selected_campaigns:
-                    display_df = display_df[display_df['キャンペーン名'].isin(selected_campaigns)]
+                    table_display_df = table_display_df[table_display_df['キャンペーン名'].isin(selected_campaigns)]
 
                 # --- 全体サマリ ---
                 st.markdown("---")
                 st.markdown("##### 💰 予算・消化状況")
                 r1c1, r1c2, r1c3, r1c4 = st.columns(4)
                 r1c1.metric("当月の理想進捗率", f"{standard_pacing:.1f}%", f"{end_date.month}/{end_date.day} 時点")
-                r1c2.metric("合計消化額 (Gross)", f"¥{display_df['期間消化額'].sum():,.0f}")
-                r1c3.metric("昨日の合計消化額", f"¥{display_df['昨日消化'].sum():,.0f}", f"{display_df['消化前日比'].sum():+,.0f} 円")
-                avg_prog = display_df[display_df['当月予算']>0]['進捗率(%)'].mean()
+                r1c2.metric("合計消化額 (Gross)", f"¥{table_display_df['期間消化額'].sum():,.0f}")
+                r1c3.metric("昨日の合計消化額", f"¥{table_display_df['昨日消化'].sum():,.0f}", f"{table_display_df['消化前日比'].sum():+,.0f} 円")
+                avg_prog = table_display_df[table_display_df['当月予算']>0]['進捗率(%)'].mean()
                 r1c4.metric("平均実績進捗率", f"{avg_prog:.1f}%", delta=f"{avg_prog - standard_pacing:.1f} pt")
 
                 st.markdown("##### 👁️ インプレッション・クリック状況")
                 r2c1, r2c2, r2c3, r2c4 = st.columns(4)
-                r2c1.metric("今月の合計IMP", f"{display_df['期間IMP'].sum():,.0f}")
-                r2c2.metric("今月の合計Click", f"{display_df['期間Click'].sum():,.0f}")
-                r2c3.metric("昨日のIMP", f"{display_df['昨日IMP'].sum():,.0f}", f"{display_df['IMP前日比'].sum():+,.0f}")
-                r2c4.metric("昨日のClick", f"{display_df['昨日Click'].sum():,.0f}", f"{display_df['Click前日比'].sum():+,.0f}")
+                r2c1.metric("今月の合計IMP", f"{table_display_df['期間IMP'].sum():,.0f}")
+                r2c2.metric("今月の合計Click", f"{table_display_df['期間Click'].sum():,.0f}")
+                r2c3.metric("昨日のIMP", f"{table_display_df['昨日IMP'].sum():,.0f}", f"{table_display_df['IMP前日比'].sum():+,.0f}")
+                r2c4.metric("昨日のClick", f"{table_display_df['昨日Click'].sum():,.0f}", f"{table_display_df['Click前日比'].sum():+,.0f}")
 
                 # --- 詳細テーブル ---
                 st.markdown("---")
                 st.markdown("### 📋 キャンペーン別詳細")
                 st.caption("乖離： 🟦ハイペース(>+10) | ⬛順調 | 🟨警戒 | 🟥危険(<-10)")
                 
-                styled_df = display_df.style.format({
+                styled_df = table_display_df.style.format({
                     '当月予算': '¥{:,.0f}', '期間消化額': '¥{:,.0f}',
                     '進捗率(%)': '{:.1f}%', '進捗前日比': '{:+.1f}pt', '乖離(pt)': '{:+.1f}',
                     '昨日消化': '¥{:,.0f}', '消化前日比': '{:+,.0f}',
@@ -198,18 +202,15 @@ if st.sidebar.button("データ取得"):
                 st.dataframe(styled_df, use_container_width=True, height=500)
 
                 # ========================================================
-                # 📈 グラフ描画セクション（アカウント対応版）
+                # 📈 グラフ描画セクション（修正：マスタからデータを引くように変更）
                 # ========================================================
                 st.markdown("---")
                 st.markdown("### 📈 詳細分析（グラフ）")
                 
-                # グラフの選択肢を作成
-                # 1. 全体合計
-                # 2. アカウント一覧（わかりやすく【アカウント】をつける）
-                # 3. キャンペーン一覧（【キャンペーン】をつける）
-                
-                account_list = sorted(display_df['アカウント名'].unique())
-                campaign_list = sorted(display_df['キャンペーン名'].unique())
+                # グラフ選択肢の作成（フィルタの影響を受けない master_df から作成）
+                # これにより、表でフィルタしていても、グラフでは全アカウントを選択可能にする
+                account_list = sorted(master_df['account_name'].unique())
+                campaign_list = sorted(master_df['campaign_name'].unique())
                 
                 graph_options = ["全体合計"] + \
                                 [f"【アカウント】{acc}" for acc in account_list] + \
@@ -224,39 +225,35 @@ if st.sidebar.button("データ取得"):
                 
                 # A. 全体合計モード
                 if selected_graph_item == "全体合計":
-                    target_campaign_ids = display_df['キャンペーン名'].unique()
-                    target_ids_in_perf = master_df[master_df['campaign_name'].isin(target_campaign_ids)]['campaign_id'].values
-                    base_data = perf_df[perf_df['campaign_id'].isin(target_ids_in_perf)].copy()
-                    
-                    if not base_data.empty:
-                        target_data = base_data.groupby('target_date')[['gross', 'impression', 'click']].sum().reset_index()
-                        target_budget_graph = display_df['当月予算'].sum()
+                    # perf_df全体を集計
+                    target_data = perf_df.groupby('target_date')[['gross', 'impression', 'click']].sum().reset_index()
+                    target_budget_graph = master_df['monthly_budget'].sum()
 
                 # B. アカウント選択モード
                 elif selected_graph_item.startswith("【アカウント】"):
-                    # 選択されたアカウント名を取り出す
                     target_acc_name = selected_graph_item.replace("【アカウント】", "")
                     
-                    # そのアカウントに紐づくキャンペーンIDを取得
-                    target_ids_in_perf = master_df[master_df['account_name'] == target_acc_name]['campaign_id'].values
+                    # そのアカウントに紐づくキャンペーンIDをmaster_dfから取得
+                    target_ids = master_df[master_df['account_name'] == target_acc_name]['campaign_id'].values
                     
-                    base_data = perf_df[perf_df['campaign_id'].isin(target_ids_in_perf)].copy()
+                    # 予算計算
+                    target_budget_graph = master_df[master_df['account_name'] == target_acc_name]['monthly_budget'].sum()
                     
+                    # 実績データ抽出
+                    base_data = perf_df[perf_df['campaign_id'].isin(target_ids)].copy()
                     if not base_data.empty:
                         target_data = base_data.groupby('target_date')[['gross', 'impression', 'click']].sum().reset_index()
-                        # そのアカウントの予算合計
-                        target_budget_graph = display_df[display_df['アカウント名'] == target_acc_name]['当月予算'].sum()
 
                 # C. キャンペーン選択モード
                 else:
                     target_camp_name = selected_graph_item.replace("【キャンペーン】", "")
                     
-                    # 選択されたキャンペーンのIDを取得
-                    target_camp_id_list = master_df[master_df['campaign_name'] == target_camp_name]['campaign_id'].values
+                    # キャンペーンIDと予算を特定
+                    target_rows = master_df[master_df['campaign_name'] == target_camp_name]
                     
-                    if len(target_camp_id_list) > 0:
-                        target_camp_id = target_camp_id_list[0]
-                        target_budget_graph = master_df[master_df['campaign_name'] == target_camp_name]['monthly_budget'].values[0]
+                    if not target_rows.empty:
+                        target_camp_id = target_rows.iloc[0]['campaign_id']
+                        target_budget_graph = target_rows.iloc[0]['monthly_budget']
                         
                         target_data = perf_df[perf_df['campaign_id'] == target_camp_id].copy()
                         target_data = target_data[['target_date', 'gross', 'impression', 'click']]
@@ -324,4 +321,4 @@ if st.sidebar.button("データ取得"):
 
                     st.plotly_chart(fig, use_container_width=True)
                 else:
-                    st.info("データがありません。")
+                    st.info("📊 グラフを表示するためのデータがありません。")
