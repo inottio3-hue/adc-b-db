@@ -198,46 +198,66 @@ if st.sidebar.button("データ取得"):
                 st.dataframe(styled_df, use_container_width=True, height=500)
 
                 # ========================================================
-                # 📈 グラフ描画セクション（修正版：全体合計対応）
+                # 📈 グラフ描画セクション（アカウント対応版）
                 # ========================================================
                 st.markdown("---")
                 st.markdown("### 📈 詳細分析（グラフ）")
                 
-                # キャンペーンリストに「全体合計」を追加
-                campaign_list = list(display_df['キャンペーン名'].unique())
-                graph_options = ["全体合計"] + campaign_list
+                # グラフの選択肢を作成
+                # 1. 全体合計
+                # 2. アカウント一覧（わかりやすく【アカウント】をつける）
+                # 3. キャンペーン一覧（【キャンペーン】をつける）
                 
-                selected_graph_camp = st.selectbox("グラフを表示する対象を選択してください（全体合計 または 個別キャンペーン）", graph_options)
+                account_list = sorted(display_df['アカウント名'].unique())
+                campaign_list = sorted(display_df['キャンペーン名'].unique())
+                
+                graph_options = ["全体合計"] + \
+                                [f"【アカウント】{acc}" for acc in account_list] + \
+                                [f"【キャンペーン】{camp}" for camp in campaign_list]
+                
+                selected_graph_item = st.selectbox("グラフを表示する対象を選択", graph_options)
                 
                 # グラフ用データ作成処理
                 target_data = None
                 target_budget_graph = 0
+                graph_title_prefix = selected_graph_item
                 
-                if selected_graph_camp == "全体合計":
-                    # --- 全体合計モード ---
-                    # まず、フィルタリングされているdisplay_dfに含まれるキャンペーンIDのみを対象にする
+                # A. 全体合計モード
+                if selected_graph_item == "全体合計":
                     target_campaign_ids = display_df['キャンペーン名'].unique()
                     target_ids_in_perf = master_df[master_df['campaign_name'].isin(target_campaign_ids)]['campaign_id'].values
-                    
-                    # 該当キャンペーンの日別データを抽出
                     base_data = perf_df[perf_df['campaign_id'].isin(target_ids_in_perf)].copy()
                     
                     if not base_data.empty:
-                        # 日付ごとに全キャンペーンを合計する
                         target_data = base_data.groupby('target_date')[['gross', 'impression', 'click']].sum().reset_index()
-                        
-                        # 予算も合計する
                         target_budget_graph = display_df['当月予算'].sum()
+
+                # B. アカウント選択モード
+                elif selected_graph_item.startswith("【アカウント】"):
+                    # 選択されたアカウント名を取り出す
+                    target_acc_name = selected_graph_item.replace("【アカウント】", "")
+                    
+                    # そのアカウントに紐づくキャンペーンIDを取得
+                    target_ids_in_perf = master_df[master_df['account_name'] == target_acc_name]['campaign_id'].values
+                    
+                    base_data = perf_df[perf_df['campaign_id'].isin(target_ids_in_perf)].copy()
+                    
+                    if not base_data.empty:
+                        target_data = base_data.groupby('target_date')[['gross', 'impression', 'click']].sum().reset_index()
+                        # そのアカウントの予算合計
+                        target_budget_graph = display_df[display_df['アカウント名'] == target_acc_name]['当月予算'].sum()
+
+                # C. キャンペーン選択モード
                 else:
-                    # --- 個別キャンペーンモード ---
+                    target_camp_name = selected_graph_item.replace("【キャンペーン】", "")
+                    
                     # 選択されたキャンペーンのIDを取得
-                    target_camp_id_list = master_df[master_df['campaign_name'] == selected_graph_camp]['campaign_id'].values
+                    target_camp_id_list = master_df[master_df['campaign_name'] == target_camp_name]['campaign_id'].values
                     
                     if len(target_camp_id_list) > 0:
                         target_camp_id = target_camp_id_list[0]
-                        target_budget_graph = master_df[master_df['campaign_name'] == selected_graph_camp]['monthly_budget'].values[0]
+                        target_budget_graph = master_df[master_df['campaign_name'] == target_camp_name]['monthly_budget'].values[0]
                         
-                        # そのキャンペーンの日別データを抽出
                         target_data = perf_df[perf_df['campaign_id'] == target_camp_id].copy()
                         target_data = target_data[['target_date', 'gross', 'impression', 'click']]
 
@@ -246,7 +266,7 @@ if st.sidebar.button("データ取得"):
                     # 日付順に並べ替え
                     target_data = target_data.sort_values('target_date')
                     
-                    # 累積データの計算 (cumsum)
+                    # 累積データの計算
                     target_data['cum_gross'] = target_data['gross'].cumsum()
                     target_data['cum_imp'] = target_data['impression'].cumsum()
                     target_data['cum_click'] = target_data['click'].cumsum()
@@ -257,7 +277,7 @@ if st.sidebar.button("データ取得"):
                     else:
                         target_data['actual_progress'] = 0
 
-                    # 理想進捗ラインの作成
+                    # 理想進捗ライン
                     last_day_of_month = calendar.monthrange(start_date.year, start_date.month)[1]
                     month_dates = [datetime.date(start_date.year, start_date.month, d) for d in range(1, last_day_of_month + 1)]
                     
@@ -269,7 +289,7 @@ if st.sidebar.button("データ取得"):
                     fig = make_subplots(rows=2, cols=1, 
                                         shared_xaxes=True, 
                                         vertical_spacing=0.1,
-                                        subplot_titles=(f"[{selected_graph_camp}] 進捗率の推移", f"[{selected_graph_camp}] 累積IMP・Click推移"),
+                                        subplot_titles=(f"[{graph_title_prefix}] 進捗率の推移", f"[{graph_title_prefix}] 累積IMP・Click推移"),
                                         specs=[[{"secondary_y": False}], [{"secondary_y": True}]])
 
                     # 上段：進捗率
