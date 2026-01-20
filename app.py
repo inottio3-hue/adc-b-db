@@ -19,26 +19,25 @@ api_key = st.sidebar.text_input("MicroAd API Key", type="password")
 # 2. 期間選択
 today = datetime.date.today()
 first_day = today.replace(day=1)
-# デフォルトは「今月1日〜昨日」
 start_date = st.sidebar.date_input("開始日", first_day)
 end_date = st.sidebar.date_input("終了日", today - datetime.timedelta(days=1))
+
+# ★追加：表示モードの切替
+st.sidebar.markdown("---")
+view_mode = st.sidebar.radio(
+    "表示単位を選択",
+    ("キャンペーン別", "アカウント別（顧客合計）")
+)
 
 # --- データ取得関数 ---
 def get_microad_data(api_key, start, end):
     url = "https://report.ads-api.universe.microad.jp/v2/reports"
-    
-    headers = {
-        "x-api-key": api_key,
-        "Content-Type": "application/json"
-    }
-    
-    # 日付をYYYYMMDD形式に変換
+    headers = {"x-api-key": api_key, "Content-Type": "application/json"}
     payload = {
         "start_date": start.strftime("%Y%m%d"),
         "end_date": end.strftime("%Y%m%d"),
         "report_type": "campaign"
     }
-    
     try:
         response = requests.request("GET", url, headers=headers, json=payload)
         response.raise_for_status()
@@ -49,19 +48,12 @@ def get_microad_data(api_key, start, end):
 
 # --- 色分けロジック関数 ---
 def color_diff(val):
-    """
-    乖離ポイントに応じた文字色を返す関数
-    青: +10pt超
-    黒: 0 ～ +10pt
-    黄: -10 ～ 0pt
-    赤: -10pt未満（危険）
-    """
     if val > 10:
         return 'color: blue; font-weight: bold;'
     elif 0 <= val <= 10:
         return 'color: black;'
     elif -10 <= val < 0:
-        return 'color: #D4AC0D; font-weight: bold;' # 読みやすい濃い黄色
+        return 'color: #D4AC0D; font-weight: bold;'
     else:
         return 'color: red; font-weight: bold;'
 
@@ -81,7 +73,7 @@ if st.sidebar.button("データ取得"):
                     acc_name = acc.get('name', 'Unknown')
                     if 'campaign' in acc:
                         for camp in acc['campaign']:
-                            # 当月の予算を探す
+                            # 予算取得
                             target_month = start_date.strftime("%Y%m")
                             monthly_limit = 0
                             if 'campaign_monthly_charge_limit' in camp:
@@ -114,79 +106,162 @@ if st.sidebar.button("データ取得"):
                 for col in numeric_cols:
                     if col in perf_df.columns:
                         perf_df[col] = pd.to_numeric(perf_df[col], errors='coerce').fillna(0)
-
-                # キャンペーンIDで集計
+                
+                # 日付変換
+                if 'target_date' in perf_df.columns:
+                    perf_df['target_date'] = pd.to_datetime(perf_df['target_date'].astype(str))
+                
+                # --- A. 期間合計の集計 ---
                 agg_df = perf_df.groupby('campaign_id')[numeric_cols].sum().reset_index()
                 
-                # 3. マスタと実績を結合
+                # --- B. 前日比データの作成 ---
+                if 'target_date' in perf_df.columns and not perf_df.empty:
+                    latest_date = perf_df['target_date'].max()
+                    prev_date = latest_date - datetime.timedelta(days=1)
+                    
+                    target_cols = ['gross', 'impression', 'click']
+                    
+                    # 昨日
+                    latest_df = perf_df[perf_df['target_date'] == latest_date].groupby('campaign_id')[target_cols].sum().reset_index()
+                    latest_df = latest_df.rename(columns={'gross':'latest_gross', 'impression':'latest_imp', 'click':'latest_click'})
+                    
+                    # 一昨日
+                    prev_df = perf_df[perf_df['target_date'] == prev_date].groupby('campaign_id')[target_cols].sum().reset_index()
+                    prev_df = prev_df.rename(columns={'gross':'prev_gross', 'impression':'prev_imp', 'click':'prev_click'})
+                    
+                    daily_diff_df = pd.merge(latest_df, prev_df, on='campaign_id', how='left').fillna(0)
+                    daily_diff_df['diff_gross'] = daily_diff_df['latest_gross'] - daily_diff_df['prev_gross']
+                    daily_diff_df['diff_imp'] = daily_diff_df['latest_imp'] - daily_diff_df['prev_imp']
+                    daily_diff_df['diff_click'] = daily_diff_df['latest_click'] - daily_diff_df['prev_click']
+                else:
+                    daily_diff_df = pd.DataFrame(columns=['campaign_id', 'latest_gross', 'diff_gross', 'latest_imp', 'diff_imp', 'latest_click', 'diff_click'])
+
+                # 3. 全データを結合（キャンペーンレベル）
                 merged_df = pd.merge(agg_df, master_df, on='campaign_id', how='left')
+                merged_df = pd.merge(merged_df, daily_diff_df, on='campaign_id', how='left')
                 
-                # --- 理想進捗率(Standard Pacing)の計算 ---
-                # 終了日の月の日数を取得
+                # ==========================================
+                # ★ここで表示モードによる分岐処理
+                # ==========================================
+                if view_mode == "アカウント別（顧客合計）":
+                    # アカウント名で集計（合計する）
+                    # 数値項目を全部足し合わせる
+                    sum_cols = [
+                        'monthly_budget', 'gross', 
+                        'latest_gross', 'diff_gross', 
+                        'latest_imp', 'diff_imp',
+                        'latest_click', 'diff_click',
+                        'impression', 'click'
+                    ]
+                    display_df = merged_df.groupby('account_name')[sum_cols].sum().reset_index()
+                    # キャンペーン名は「(アカウント計)」などの表記にするか、列を削除
+                    display_df['campaign_name'] = '（アカウント合計）'
+                    
+                    # フィルタ用カラム設定
+                    filter_col_name = 'account_name'
+                    filter_label = "アカウント名で絞り込み"
+                    
+                else:
+                    # キャンペーン別（そのまま）
+                    display_df = merged_df.copy()
+                    filter_col_name = 'campaign_name'
+                    filter_label = "キャンペーン名で絞り込み"
+
+                # ------------------------------------------
+                # 共通計算処理（進捗率・乖離などは集計後に再計算する）
+                # ------------------------------------------
+                
+                # 理想進捗率
                 year = end_date.year
                 month = end_date.month
                 _, num_days_in_month = calendar.monthrange(year, month)
                 days_elapsed = end_date.day
-                
-                # 理想進捗率 = (経過日数 / 月の全日数) * 100
                 standard_pacing = (days_elapsed / num_days_in_month) * 100
                 
-                # 実際の進捗率
-                merged_df['progress_percent'] = merged_df.apply(
+                # 実績進捗率 (再計算)
+                display_df['progress_percent'] = display_df.apply(
                     lambda x: (x['gross'] / x['monthly_budget'] * 100) if x['monthly_budget'] > 0 else 0, axis=1
                 )
                 
-                # 乖離(Diff) = 実績 - 理想
-                merged_df['diff_point'] = merged_df['progress_percent'] - standard_pacing
+                # 進捗前日比 (再計算)
+                display_df['daily_progress_diff'] = display_df.apply(
+                    lambda x: (x['latest_gross'] / x['monthly_budget'] * 100) if x['monthly_budget'] > 0 else 0, axis=1
+                )
+                
+                # 乖離 (再計算)
+                display_df['diff_point'] = display_df['progress_percent'] - standard_pacing
 
-                # 表示用データの整形
-                display_df = merged_df[[
+                # --- 表示用カラム整理 ---
+                final_df = display_df[[
                     'account_name', 'campaign_name', 
-                    'monthly_budget', 'gross', 'progress_percent', 'diff_point',
-                    'impression', 'click'
+                    'monthly_budget', 
+                    'gross', 
+                    'progress_percent', 'daily_progress_diff',
+                    'diff_point',
+                    'latest_gross', 'diff_gross', 
+                    'latest_imp', 'diff_imp',
+                    'latest_click', 'diff_click'
                 ]].copy()
                 
-                display_df.columns = [
+                final_df.columns = [
                     'アカウント名', 'キャンペーン名', 
-                    '当月予算', '消化額(Gross)', '進捗率(%)', '乖離(pt)',
-                    'IMP', 'Click'
+                    '当月予算', 
+                    '期間消化額', 
+                    '進捗率(%)', '進捗前日比',
+                    '乖離(pt)',
+                    '昨日消化', '消化前日比',
+                    '昨日IMP', 'IMP前日比',
+                    '昨日Click', 'Click前日比'
                 ]
 
                 # --- フィルタ機能 ---
                 st.markdown("### 🔍 フィルタリング")
-                all_campaign_names = display_df['キャンペーン名'].unique()
-                selected_campaigns = st.multiselect(
-                    "キャンペーン名で絞り込み",
-                    options=all_campaign_names
+                
+                # 表示モードに合わせてフィルタの選択肢を変える
+                if view_mode == "アカウント別（顧客合計）":
+                    target_col = 'アカウント名'
+                else:
+                    target_col = 'キャンペーン名'
+                    
+                all_names = final_df[target_col].unique()
+                selected_names = st.multiselect(
+                    f"{target_col}で絞り込み",
+                    options=all_names
                 )
-                if selected_campaigns:
-                    display_df = display_df[display_df['キャンペーン名'].isin(selected_campaigns)]
+                if selected_names:
+                    final_df = final_df[final_df[target_col].isin(selected_names)]
 
                 # --- 全体サマリ ---
                 st.markdown("---")
                 col1, col2, col3, col4 = st.columns(4)
                 
-                # 全体サマリに「理想進捗率」を表示
-                col1.metric("当月の理想進捗率", f"{standard_pacing:.1f}%", f"現在: {end_date.month}月{end_date.day}日時点")
-                col2.metric("合計消化額 (Gross)", f"¥{display_df['消化額(Gross)'].sum():,.0f}")
-                col3.metric("合計インプレッション", f"{display_df['IMP'].sum():,.0f}")
+                col1.metric("当月の理想進捗率", f"{standard_pacing:.1f}%", f"{end_date.month}/{end_date.day} 時点")
+                col2.metric("合計消化額 (Gross)", f"¥{final_df['期間消化額'].sum():,.0f}")
                 
-                avg_progress = display_df[display_df['当月予算'] > 0]['進捗率(%)'].mean()
+                total_latest_gross = final_df['昨日消化'].sum()
+                total_diff_gross = final_df['消化前日比'].sum()
+                col3.metric("昨日の合計消化額", f"¥{total_latest_gross:,.0f}", f"{total_diff_gross:+,.0f} 円 (前日比)")
+                
+                avg_progress = final_df[final_df['当月予算'] > 0]['進捗率(%)'].mean()
                 col4.metric("平均実績進捗率", f"{avg_progress:.1f}%", delta=f"{avg_progress - standard_pacing:.1f} pt")
 
                 # --- 詳細テーブル ---
-                st.markdown("### 📋 キャンペーン別詳細（色分け表示）")
-                st.caption(f"色の意味： 🟦ハイペース(>+10) | ⬛順調(0~+10) | 🟨警戒(-10~0) | 🟥危険(<-10)")
+                st.markdown(f"### 📋 詳細データ（{view_mode}）")
+                st.caption(f"乖離の色分け： 🟦ハイペース(>+10) | ⬛順調(0~+10) | 🟨警戒(-10~0) | 🟥危険(<-10)")
                 
-                # スタイルの適用
-                styled_df = display_df.style.format({
+                styled_df = final_df.style.format({
                     '当月予算': '¥{:,.0f}',
-                    '消化額(Gross)': '¥{:,.0f}',
+                    '期間消化額': '¥{:,.0f}',
                     '進捗率(%)': '{:.1f}%',
-                    '乖離(pt)': '{:+.1f}', # プラスマイナスを表示
-                    'IMP': '{:,.0f}',
-                    'Click': '{:,.0f}'
-                }).map(color_diff, subset=['乖離(pt)']) # 乖離列に色を適用
+                    '進捗前日比': '{:+.1f}pt',
+                    '乖離(pt)': '{:+.1f}',
+                    '昨日消化': '¥{:,.0f}',
+                    '消化前日比': '{:+,.0f}',
+                    '昨日IMP': '{:,.0f}',
+                    'IMP前日比': '{:+,.0f}',
+                    '昨日Click': '{:,.0f}',
+                    'Click前日比': '{:+,.0f}'
+                }).map(color_diff, subset=['乖離(pt)'])
 
                 st.dataframe(
                     styled_df,
