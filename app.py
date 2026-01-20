@@ -3,7 +3,7 @@ import pandas as pd
 import requests
 import datetime
 import calendar
-import plotly.graph_objects as go # グラフ描画用ライブラリ
+import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
 # ページ設定
@@ -113,7 +113,6 @@ if st.sidebar.button("データ取得"):
                     latest_df = perf_df[perf_df['target_date'] == latest_date].groupby('campaign_id')[target_cols].sum().reset_index()
                     prev_df = perf_df[perf_df['target_date'] == prev_date].groupby('campaign_id')[target_cols].sum().reset_index()
                     
-                    # リネーム
                     latest_df = latest_df.rename(columns={'gross':'l_gross', 'impression':'l_imp', 'click':'l_click'})
                     prev_df = prev_df.rename(columns={'gross':'p_gross', 'impression':'p_imp', 'click':'p_click'})
                     
@@ -122,7 +121,6 @@ if st.sidebar.button("データ取得"):
                     daily_diff_df['diff_imp'] = daily_diff_df['l_imp'] - daily_diff_df['p_imp']
                     daily_diff_df['diff_click'] = daily_diff_df['l_click'] - daily_diff_df['p_click']
                     
-                    # 列名をマージ用に整える
                     daily_diff_df = daily_diff_df[['campaign_id', 'l_gross', 'diff_gross', 'l_imp', 'diff_imp', 'l_click', 'diff_click']]
                     daily_diff_df = daily_diff_df.rename(columns={'l_gross':'latest_gross', 'l_imp':'latest_imp', 'l_click':'latest_click'})
                 else:
@@ -200,91 +198,110 @@ if st.sidebar.button("データ取得"):
                 st.dataframe(styled_df, use_container_width=True, height=500)
 
                 # ========================================================
-                # 📈 グラフ描画セクション（ここを追加！）
+                # 📈 グラフ描画セクション（修正版：全体合計対応）
                 # ========================================================
                 st.markdown("---")
                 st.markdown("### 📈 詳細分析（グラフ）")
                 
-                # グラフを表示するキャンペーンを選択
-                # （デフォルトはリストの最初の1つ）
-                graph_options = display_df['キャンペーン名'].unique()
-                if len(graph_options) > 0:
-                    selected_graph_camp = st.selectbox("グラフを表示するキャンペーンを選択してください", graph_options)
+                # キャンペーンリストに「全体合計」を追加
+                campaign_list = list(display_df['キャンペーン名'].unique())
+                graph_options = ["全体合計"] + campaign_list
+                
+                selected_graph_camp = st.selectbox("グラフを表示する対象を選択してください（全体合計 または 個別キャンペーン）", graph_options)
+                
+                # グラフ用データ作成処理
+                target_data = None
+                target_budget_graph = 0
+                
+                if selected_graph_camp == "全体合計":
+                    # --- 全体合計モード ---
+                    # まず、フィルタリングされているdisplay_dfに含まれるキャンペーンIDのみを対象にする
+                    target_campaign_ids = display_df['キャンペーン名'].unique()
+                    target_ids_in_perf = master_df[master_df['campaign_name'].isin(target_campaign_ids)]['campaign_id'].values
                     
+                    # 該当キャンペーンの日別データを抽出
+                    base_data = perf_df[perf_df['campaign_id'].isin(target_ids_in_perf)].copy()
+                    
+                    if not base_data.empty:
+                        # 日付ごとに全キャンペーンを合計する
+                        target_data = base_data.groupby('target_date')[['gross', 'impression', 'click']].sum().reset_index()
+                        
+                        # 予算も合計する
+                        target_budget_graph = display_df['当月予算'].sum()
+                else:
+                    # --- 個別キャンペーンモード ---
                     # 選択されたキャンペーンのIDを取得
-                    target_camp_id = master_df[master_df['campaign_name'] == selected_graph_camp]['campaign_id'].values[0]
-                    target_budget = master_df[master_df['campaign_name'] == selected_graph_camp]['monthly_budget'].values[0]
+                    target_camp_id_list = master_df[master_df['campaign_name'] == selected_graph_camp]['campaign_id'].values
                     
-                    # そのキャンペーンの日別データを抽出
-                    daily_data = perf_df[perf_df['campaign_id'] == target_camp_id].copy()
+                    if len(target_camp_id_list) > 0:
+                        target_camp_id = target_camp_id_list[0]
+                        target_budget_graph = master_df[master_df['campaign_name'] == selected_graph_camp]['monthly_budget'].values[0]
+                        
+                        # そのキャンペーンの日別データを抽出
+                        target_data = perf_df[perf_df['campaign_id'] == target_camp_id].copy()
+                        target_data = target_data[['target_date', 'gross', 'impression', 'click']]
+
+                # --- グラフ描画処理（共通） ---
+                if target_data is not None and not target_data.empty:
+                    # 日付順に並べ替え
+                    target_data = target_data.sort_values('target_date')
                     
-                    if not daily_data.empty:
-                        # 日付順に並べ替え
-                        daily_data = daily_data.sort_values('target_date')
-                        
-                        # 累積データの計算 (cumsum)
-                        daily_data['cum_gross'] = daily_data['gross'].cumsum()
-                        daily_data['cum_imp'] = daily_data['impression'].cumsum()
-                        daily_data['cum_click'] = daily_data['click'].cumsum()
-                        
-                        # 進捗率の計算
-                        if target_budget > 0:
-                            daily_data['actual_progress'] = (daily_data['cum_gross'] / target_budget) * 100
-                        else:
-                            daily_data['actual_progress'] = 0
-
-                        # 理想進捗ラインの作成
-                        # 月初〜月末までの日付リストを作成
-                        last_day_of_month = calendar.monthrange(start_date.year, start_date.month)[1]
-                        month_dates = [datetime.date(start_date.year, start_date.month, d) for d in range(1, last_day_of_month + 1)]
-                        
-                        ideal_df = pd.DataFrame({'date': month_dates})
-                        ideal_df['date'] = pd.to_datetime(ideal_df['date'])
-                        # 理想進捗率（1日ごとに均等に増える）
-                        ideal_df['ideal_progress'] = (ideal_df.index + 1) / last_day_of_month * 100
-
-                        # グラフの作成（2段構成）
-                        fig = make_subplots(rows=2, cols=1, 
-                                            shared_xaxes=True, 
-                                            vertical_spacing=0.1,
-                                            subplot_titles=("進捗率の推移 (実績 vs 理想)", "インプレッション・クリックの累積推移"),
-                                            specs=[[{"secondary_y": False}], [{"secondary_y": True}]])
-
-                        # --- 上段：進捗率グラフ ---
-                        # 理想ライン（青点線）
-                        fig.add_trace(go.Scatter(
-                            x=ideal_df['date'], y=ideal_df['ideal_progress'],
-                            mode='lines', name='理想進捗率',
-                            line=dict(color='blue', dash='dot', width=1)
-                        ), row=1, col=1)
-                        
-                        # 実績ライン（赤実線）
-                        fig.add_trace(go.Scatter(
-                            x=daily_data['target_date'], y=daily_data['actual_progress'],
-                            mode='lines+markers', name='実績進捗率',
-                            line=dict(color='red', width=3)
-                        ), row=1, col=1)
-
-                        # --- 下段：IMP・Clickグラフ ---
-                        # インプレッション（棒グラフ or 面グラフ）
-                        fig.add_trace(go.Bar(
-                            x=daily_data['target_date'], y=daily_data['cum_imp'],
-                            name='累積IMP', opacity=0.3, marker_color='gray'
-                        ), row=2, col=1, secondary_y=False)
-
-                        # クリック（折れ線グラフ）
-                        fig.add_trace(go.Scatter(
-                            x=daily_data['target_date'], y=daily_data['cum_click'],
-                            name='累積Click', mode='lines+markers',
-                            line=dict(color='orange', width=2)
-                        ), row=2, col=1, secondary_y=True)
-
-                        # レイアウト調整
-                        fig.update_layout(height=700, showlegend=True, hovermode="x unified")
-                        fig.update_yaxes(title_text="進捗率 (%)", range=[0, 110], row=1, col=1)
-                        fig.update_yaxes(title_text="累積IMP", row=2, col=1, secondary_y=False)
-                        fig.update_yaxes(title_text="累積Click", row=2, col=1, secondary_y=True)
-
-                        st.plotly_chart(fig, use_container_width=True)
+                    # 累積データの計算 (cumsum)
+                    target_data['cum_gross'] = target_data['gross'].cumsum()
+                    target_data['cum_imp'] = target_data['impression'].cumsum()
+                    target_data['cum_click'] = target_data['click'].cumsum()
+                    
+                    # 進捗率の計算
+                    if target_budget_graph > 0:
+                        target_data['actual_progress'] = (target_data['cum_gross'] / target_budget_graph) * 100
                     else:
-                        st.info("このキャンペーンの日別データがありません。")
+                        target_data['actual_progress'] = 0
+
+                    # 理想進捗ラインの作成
+                    last_day_of_month = calendar.monthrange(start_date.year, start_date.month)[1]
+                    month_dates = [datetime.date(start_date.year, start_date.month, d) for d in range(1, last_day_of_month + 1)]
+                    
+                    ideal_df = pd.DataFrame({'date': month_dates})
+                    ideal_df['date'] = pd.to_datetime(ideal_df['date'])
+                    ideal_df['ideal_progress'] = (ideal_df.index + 1) / last_day_of_month * 100
+
+                    # グラフ作成
+                    fig = make_subplots(rows=2, cols=1, 
+                                        shared_xaxes=True, 
+                                        vertical_spacing=0.1,
+                                        subplot_titles=(f"[{selected_graph_camp}] 進捗率の推移", f"[{selected_graph_camp}] 累積IMP・Click推移"),
+                                        specs=[[{"secondary_y": False}], [{"secondary_y": True}]])
+
+                    # 上段：進捗率
+                    fig.add_trace(go.Scatter(
+                        x=ideal_df['date'], y=ideal_df['ideal_progress'],
+                        mode='lines', name='理想進捗率',
+                        line=dict(color='blue', dash='dot', width=1)
+                    ), row=1, col=1)
+                    
+                    fig.add_trace(go.Scatter(
+                        x=target_data['target_date'], y=target_data['actual_progress'],
+                        mode='lines+markers', name='実績進捗率',
+                        line=dict(color='red', width=3)
+                    ), row=1, col=1)
+
+                    # 下段：IMP / Click
+                    fig.add_trace(go.Bar(
+                        x=target_data['target_date'], y=target_data['cum_imp'],
+                        name='累積IMP', opacity=0.3, marker_color='gray'
+                    ), row=2, col=1, secondary_y=False)
+
+                    fig.add_trace(go.Scatter(
+                        x=target_data['target_date'], y=target_data['cum_click'],
+                        name='累積Click', mode='lines+markers',
+                        line=dict(color='orange', width=2)
+                    ), row=2, col=1, secondary_y=True)
+
+                    fig.update_layout(height=700, showlegend=True, hovermode="x unified")
+                    fig.update_yaxes(title_text="進捗率 (%)", range=[0, 110], row=1, col=1)
+                    fig.update_yaxes(title_text="累積IMP", row=2, col=1, secondary_y=False)
+                    fig.update_yaxes(title_text="累積Click", row=2, col=1, secondary_y=True)
+
+                    st.plotly_chart(fig, use_container_width=True)
+                else:
+                    st.info("データがありません。")
