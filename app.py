@@ -156,11 +156,7 @@ if st.sidebar.button("データ取得"):
                     '昨日IMP', 'IMP前日比', '昨日Click', 'Click前日比'
                 ]
 
-                # ========================================================
-                # 🚫 フィルタリング機能を廃止しました
-                # （表自体にある検索機能を利用するため）
-                # ========================================================
-                # 常に全データを表示対象とする
+                # 全データを表示対象とする（トップフィルタなし）
                 table_display_df = display_df.copy()
 
                 # --- 全体サマリ ---
@@ -223,7 +219,7 @@ if st.sidebar.button("データ取得"):
                 st.dataframe(styled_df, use_container_width=True, height=600)
 
                 # ========================================================
-                # 📈 グラフ描画セクション
+                # 📈 グラフ描画セクション（3段構成に拡張）
                 # ========================================================
                 st.markdown("---")
                 st.markdown("### 📈 詳細分析（グラフ）")
@@ -241,22 +237,17 @@ if st.sidebar.button("データ取得"):
                 target_budget_graph = 0
                 graph_title_prefix = selected_graph_item
                 
-                # A. 全体合計
+                # データ抽出
                 if selected_graph_item == "全体合計":
                     target_data = perf_df.groupby('target_date')[['gross', 'impression', 'click']].sum().reset_index()
                     target_budget_graph = master_df['monthly_budget'].sum()
-
-                # B. アカウント選択
                 elif selected_graph_item.startswith("【アカウント】"):
                     target_acc_name = selected_graph_item.replace("【アカウント】", "")
                     target_ids = master_df[master_df['account_name'] == target_acc_name]['campaign_id'].values
                     target_budget_graph = master_df[master_df['account_name'] == target_acc_name]['monthly_budget'].sum()
-                    
                     base_data = perf_df[perf_df['campaign_id'].isin(target_ids)].copy()
                     if not base_data.empty:
                         target_data = base_data.groupby('target_date')[['gross', 'impression', 'click']].sum().reset_index()
-
-                # C. キャンペーン選択
                 else:
                     target_camp_name = selected_graph_item.replace("【キャンペーン】", "")
                     target_rows = master_df[master_df['campaign_name'] == target_camp_name]
@@ -266,7 +257,7 @@ if st.sidebar.button("データ取得"):
                         target_data = perf_df[perf_df['campaign_id'] == target_camp_id].copy()
                         target_data = target_data[['target_date', 'gross', 'impression', 'click']]
 
-                # --- グラフ描画 ---
+                # グラフ描画
                 if target_data is not None and not target_data.empty:
                     target_data = target_data.sort_values('target_date')
                     target_data['cum_gross'] = target_data['gross'].cumsum()
@@ -284,20 +275,52 @@ if st.sidebar.button("データ取得"):
                     ideal_df['date'] = pd.to_datetime(ideal_df['date'])
                     ideal_df['ideal_progress'] = (ideal_df.index + 1) / last_day_of_month * 100
 
-                    fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.1,
-                                        subplot_titles=(f"[{graph_title_prefix}] 進捗率の推移", f"[{graph_title_prefix}] 累積IMP・Click推移"),
-                                        specs=[[{"secondary_y": False}], [{"secondary_y": True}]])
+                    # 3段のグラフを作成
+                    fig = make_subplots(
+                        rows=3, cols=1, 
+                        shared_xaxes=True, 
+                        vertical_spacing=0.08,
+                        subplot_titles=(
+                            f"[{graph_title_prefix}] 進捗率の推移 (実績 vs 理想)", 
+                            f"[{graph_title_prefix}] 累積IMP・Click推移",
+                            f"[{graph_title_prefix}] 日別IMP・Click推移 (★NEW)"
+                        ),
+                        specs=[
+                            [{"secondary_y": False}], 
+                            [{"secondary_y": True}],
+                            [{"secondary_y": True}]
+                        ]
+                    )
 
+                    # 1段目：進捗率
                     fig.add_trace(go.Scatter(x=ideal_df['date'], y=ideal_df['ideal_progress'], mode='lines', name='理想進捗率', line=dict(color='blue', dash='dot', width=1)), row=1, col=1)
                     fig.add_trace(go.Scatter(x=target_data['target_date'], y=target_data['actual_progress'], mode='lines+markers', name='実績進捗率', line=dict(color='red', width=3)), row=1, col=1)
 
+                    # 2段目：累積IMP/Click
                     fig.add_trace(go.Bar(x=target_data['target_date'], y=target_data['cum_imp'], name='累積IMP', opacity=0.3, marker_color='gray'), row=2, col=1, secondary_y=False)
                     fig.add_trace(go.Scatter(x=target_data['target_date'], y=target_data['cum_click'], name='累積Click', mode='lines+markers', line=dict(color='orange', width=2)), row=2, col=1, secondary_y=True)
 
-                    fig.update_layout(height=700, showlegend=True, hovermode="x unified")
+                    # 3段目：日別IMP/Click (NEW!)
+                    # IMPを棒グラフ、Clickを折れ線グラフで
+                    fig.add_trace(go.Bar(
+                        x=target_data['target_date'], y=target_data['impression'], 
+                        name='日別IMP', opacity=0.6, marker_color='lightblue'
+                    ), row=3, col=1, secondary_y=False)
+
+                    fig.add_trace(go.Scatter(
+                        x=target_data['target_date'], y=target_data['click'], 
+                        name='日別Click', mode='lines+markers', 
+                        line=dict(color='navy', width=2)
+                    ), row=3, col=1, secondary_y=True)
+
+                    # レイアウト調整
+                    fig.update_layout(height=1000, showlegend=True, hovermode="x unified") # 高さを1000に拡張
+                    
                     fig.update_yaxes(title_text="進捗率 (%)", range=[0, 110], row=1, col=1)
                     fig.update_yaxes(title_text="累積IMP", row=2, col=1, secondary_y=False)
                     fig.update_yaxes(title_text="累積Click", row=2, col=1, secondary_y=True)
+                    fig.update_yaxes(title_text="日別IMP", row=3, col=1, secondary_y=False)
+                    fig.update_yaxes(title_text="日別Click", row=3, col=1, secondary_y=True)
 
                     st.plotly_chart(fig, use_container_width=True)
                 else:
