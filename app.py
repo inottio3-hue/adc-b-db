@@ -116,15 +116,38 @@ if st.sidebar.button("データ取得"):
                     latest_df = latest_df.rename(columns={'gross':'l_gross', 'impression':'l_imp', 'click':'l_click'})
                     prev_df = prev_df.rename(columns={'gross':'p_gross', 'impression':'p_imp', 'click':'p_click'})
                     
+                    # --- ★CTR計算 (昨日と一昨日) ---
+                    latest_df['l_ctr'] = (latest_df['l_click'] / latest_df['l_imp'] * 100).fillna(0)
+                    prev_df['p_ctr'] = (prev_df['p_click'] / prev_df['p_imp'] * 100).fillna(0)
+                    
                     daily_diff_df = pd.merge(latest_df, prev_df, on='campaign_id', how='left').fillna(0)
+                    
+                    # 差分計算
                     daily_diff_df['diff_gross'] = daily_diff_df['l_gross'] - daily_diff_df['p_gross']
                     daily_diff_df['diff_imp'] = daily_diff_df['l_imp'] - daily_diff_df['p_imp']
                     daily_diff_df['diff_click'] = daily_diff_df['l_click'] - daily_diff_df['p_click']
+                    daily_diff_df['diff_ctr'] = daily_diff_df['l_ctr'] - daily_diff_df['p_ctr']
                     
-                    daily_diff_df = daily_diff_df[['campaign_id', 'l_gross', 'diff_gross', 'l_imp', 'diff_imp', 'l_click', 'diff_click']]
-                    daily_diff_df = daily_diff_df.rename(columns={'l_gross':'latest_gross', 'l_imp':'latest_imp', 'l_click':'latest_click'})
+                    # カラム整理
+                    daily_diff_df = daily_diff_df[[
+                        'campaign_id', 
+                        'l_gross', 'diff_gross', 
+                        'l_imp', 'diff_imp', 
+                        'l_click', 'diff_click',
+                        'l_ctr', 'diff_ctr'
+                    ]]
+                    daily_diff_df = daily_diff_df.rename(columns={
+                        'l_gross':'latest_gross', 
+                        'l_imp':'latest_imp', 
+                        'l_click':'latest_click',
+                        'l_ctr':'latest_ctr'
+                    })
                 else:
-                    daily_diff_df = pd.DataFrame(columns=['campaign_id', 'latest_gross', 'diff_gross', 'latest_imp', 'diff_imp', 'latest_click', 'diff_click'])
+                    daily_diff_df = pd.DataFrame(columns=[
+                        'campaign_id', 'latest_gross', 'diff_gross', 
+                        'latest_imp', 'diff_imp', 'latest_click', 'diff_click', 
+                        'latest_ctr', 'diff_ctr'
+                    ])
 
                 # 結合
                 merged_df = pd.merge(agg_df, master_df, on='campaign_id', how='left')
@@ -140,20 +163,29 @@ if st.sidebar.button("データ取得"):
                 merged_df['progress_percent'] = merged_df.apply(lambda x: (x['gross']/x['monthly_budget']*100) if x['monthly_budget']>0 else 0, axis=1)
                 merged_df['daily_progress_diff'] = merged_df.apply(lambda x: (x['latest_gross']/x['monthly_budget']*100) if x['monthly_budget']>0 else 0, axis=1)
                 merged_df['diff_point'] = merged_df['progress_percent'] - standard_pacing
+                
+                # ★期間CTR計算
+                merged_df['period_ctr'] = merged_df.apply(lambda x: (x['click'] / x['impression'] * 100) if x['impression'] > 0 else 0, axis=1)
 
                 # 表示用DF
                 display_df = merged_df[[
                     'account_name', 'campaign_name', 'monthly_budget', 'gross', 
                     'progress_percent', 'daily_progress_diff', 'diff_point',
-                    'latest_gross', 'diff_gross', 'impression', 'click',
-                    'latest_imp', 'diff_imp', 'latest_click', 'diff_click'
+                    'latest_gross', 'diff_gross', 
+                    'impression', 'click', 'period_ctr', # 期間
+                    'latest_imp', 'diff_imp', 
+                    'latest_click', 'diff_click',
+                    'latest_ctr', 'diff_ctr' # 昨日・前日比
                 ]].copy()
                 
                 display_df.columns = [
                     'アカウント名', 'キャンペーン名', '当月予算', '期間消化額', 
                     '進捗率(%)', '進捗前日比', '乖離(pt)',
-                    '昨日消化', '消化前日比', '期間IMP', '期間Click',
-                    '昨日IMP', 'IMP前日比', '昨日Click', 'Click前日比'
+                    '昨日消化', '消化前日比', 
+                    '期間IMP', '期間Click', '期間CTR',
+                    '昨日IMP', 'IMP前日比', 
+                    '昨日Click', 'Click前日比',
+                    '昨日CTR', 'CTR前日比'
                 ]
 
                 # 全データを表示対象とする
@@ -165,12 +197,34 @@ if st.sidebar.button("データ取得"):
                 # 1段目：予算
                 st.markdown("##### 💰 予算・消化状況（全体）")
                 r1c1, r1c2, r1c3, r1c4, r1c5 = st.columns(5)
-                r1c1.metric("当月予算合計", f"¥{table_display_df['当月予算'].sum():,.0f}")
-                r1c2.metric("合計消化額 (Gross)", f"¥{table_display_df['期間消化額'].sum():,.0f}")
+                
+                total_budget = table_display_df['当月予算'].sum()
+                total_gross = table_display_df['期間消化額'].sum()
+                
+                r1c1.metric("当月予算合計", f"¥{total_budget:,.0f}")
+                r1c2.metric("合計消化額 (Gross)", f"¥{total_gross:,.0f}")
                 r1c3.metric("昨日の合計消化額", f"¥{table_display_df['昨日消化'].sum():,.0f}", f"{table_display_df['消化前日比'].sum():+,.0f} 円")
                 r1c4.metric("当月の理想進捗率", f"{standard_pacing:.1f}%", f"{end_date.month}/{end_date.day} 時点")
                 avg_prog = table_display_df[table_display_df['当月予算']>0]['進捗率(%)'].mean()
                 r1c5.metric("平均実績進捗率", f"{avg_prog:.1f}%", delta=f"{avg_prog - standard_pacing:.1f} pt")
+
+                # 予測アラート
+                st.markdown("##### 🚨 予測・アラート")
+                period_days_so_far = (end_date - start_date).days + 1
+                if period_days_so_far < 1: period_days_so_far = 1
+                
+                avg_daily_burn = total_gross / period_days_so_far
+                remaining_budget = total_budget - total_gross
+                
+                a1, a2, a3, a4 = st.columns(4)
+                if avg_daily_burn > 0:
+                    days_to_exhaustion = remaining_budget / avg_daily_burn
+                    if days_to_exhaustion < (num_days_in_month - days_elapsed):
+                        a1.error(f"あと {days_to_exhaustion:.1f} 日で枯渇")
+                    else:
+                        a1.metric("予算枯渇予測", f"あと {days_to_exhaustion:.1f} 日")
+                else:
+                    a1.metric("予算枯渇予測", "消化なし")
 
                 # 2段目：IMP・Click量
                 st.markdown("##### 👁️ インプレッション・クリック状況 (全体合計)")
@@ -186,20 +240,16 @@ if st.sidebar.button("データ取得"):
                 
                 total_imp = table_display_df['期間IMP'].sum()
                 total_click = table_display_df['期間Click'].sum()
-                total_gross = table_display_df['期間消化額'].sum()
                 
-                period_days = (end_date - start_date).days + 1
-                if period_days < 1: period_days = 1
-                
-                daily_avg_imp = total_imp / period_days
-                daily_avg_click = total_click / period_days
+                daily_avg_imp = total_imp / period_days_so_far
+                daily_avg_click = total_click / period_days_so_far
                 ctr = (total_click / total_imp * 100) if total_imp > 0 else 0
                 cpm = (total_gross / total_imp * 1000) if total_imp > 0 else 0
                 
                 r3c1.metric("平均IMP (日別)", f"{daily_avg_imp:,.0f}")
                 r3c2.metric("平均Click (日別)", f"{daily_avg_click:,.0f}")
                 r3c3.metric("平均CTR", f"{ctr:.2f}%")
-                r3c4.metric("平均CPM", f"¥{cpm:,.0f}")
+                r3c4.metric("平均CPM (仕入単価)", f"¥{cpm:,.0f}")
 
                 # --- 詳細テーブル ---
                 st.markdown("---")
@@ -211,11 +261,12 @@ if st.sidebar.button("データ取得"):
                     '当月予算': '¥{:,.0f}', '期間消化額': '¥{:,.0f}',
                     '進捗率(%)': '{:.1f}%', '進捗前日比': '{:+.1f}pt', '乖離(pt)': '{:+.1f}',
                     '昨日消化': '¥{:,.0f}', '消化前日比': '{:+,.0f}',
-                    '期間IMP': '{:,.0f}', '期間Click': '{:,.0f}',
+                    '期間IMP': '{:,.0f}', '期間Click': '{:,.0f}', '期間CTR': '{:.2f}%',
                     '昨日IMP': '{:,.0f}', 'IMP前日比': '{:+,.0f}',
-                    '昨日Click': '{:,.0f}', 'Click前日比': '{:+,.0f}'
+                    '昨日Click': '{:,.0f}', 'Click前日比': '{:+,.0f}',
+                    '昨日CTR': '{:.2f}%', 'CTR前日比': '{:+.2f}pt'
                 }).map(color_diff_pacing, subset=['乖離(pt)'])\
-                  .map(color_day_diff, subset=['消化前日比', 'IMP前日比', 'Click前日比'])
+                  .map(color_day_diff, subset=['消化前日比', 'IMP前日比', 'Click前日比', 'CTR前日比'])
 
                 st.dataframe(styled_df, use_container_width=True, height=600)
 
@@ -265,33 +316,30 @@ if st.sidebar.button("データ取得"):
                     target_data['cum_imp'] = target_data['impression'].cumsum()
                     target_data['cum_click'] = target_data['click'].cumsum()
                     
+                    target_data['daily_ctr'] = (target_data['click'] / target_data['impression'] * 100).fillna(0)
+                    target_data['cum_ctr'] = (target_data['cum_click'] / target_data['cum_imp'] * 100).fillna(0)
+                    target_data['daily_cpm'] = (target_data['gross'] / target_data['impression'] * 1000).fillna(0)
+
                     if target_budget_graph > 0:
                         target_data['actual_progress'] = (target_data['cum_gross'] / target_budget_graph) * 100
                     else:
                         target_data['actual_progress'] = 0
 
-                    # 理想進捗ライン作成
                     last_day_of_month = calendar.monthrange(start_date.year, start_date.month)[1]
                     month_dates = [datetime.date(start_date.year, start_date.month, d) for d in range(1, last_day_of_month + 1)]
                     ideal_df = pd.DataFrame({'date': month_dates})
                     ideal_df['date'] = pd.to_datetime(ideal_df['date'])
-                    
                     ideal_df['ideal_progress'] = (ideal_df.index + 1) / last_day_of_month * 100
 
-                    # CPC100円仮定の理想Click
                     daily_target_budget = target_budget_graph / last_day_of_month
                     daily_target_click = daily_target_budget / 100
                     ideal_df['ideal_cum_click'] = (ideal_df.index + 1) * daily_target_click
                     ideal_df['ideal_daily_click'] = daily_target_click
 
-                    # ========================================================
-                    # ★予測 (Forecast) と 挽回 (Recovery) の計算
-                    # ========================================================
+                    # 予測・挽回計算
                     latest_actual_date = target_data['target_date'].max()
                     latest_cum_gross = target_data.loc[target_data['target_date'] == latest_actual_date, 'cum_gross'].values[0]
                     latest_cum_click = target_data.loc[target_data['target_date'] == latest_actual_date, 'cum_click'].values[0]
-
-                    # 残日数計算
                     days_remaining = (ideal_df['date'].max() - latest_actual_date).days
                     
                     forecast_df = pd.DataFrame() 
@@ -299,15 +347,10 @@ if st.sidebar.button("データ取得"):
 
                     if days_remaining > 0:
                         future_dates = [latest_actual_date + datetime.timedelta(days=i) for i in range(1, days_remaining + 1)]
-                        
-                        # --- 1. 現状維持予測 (Forecast: 単純平均法) ---
-                        # 実績がある日数
-                        days_elapsed = (latest_actual_date.date() - start_date).days + 1
-                        if days_elapsed < 1: days_elapsed = 1
-                        
-                        # 1日平均実績
-                        avg_daily_gross = latest_cum_gross / days_elapsed
-                        avg_daily_click = latest_cum_click / days_elapsed
+                        days_elapsed_val = (latest_actual_date.date() - start_date).days + 1
+                        if days_elapsed_val < 1: days_elapsed_val = 1
+                        avg_daily_gross = latest_cum_gross / days_elapsed_val
+                        avg_daily_click = latest_cum_click / days_elapsed_val
                         
                         forecast_values_gross = [latest_cum_gross + (avg_daily_gross * i) for i in range(1, days_remaining + 1)]
                         forecast_values_click = [latest_cum_click + (avg_daily_click * i) for i in range(1, days_remaining + 1)]
@@ -322,13 +365,10 @@ if st.sidebar.button("データ取得"):
                         else:
                             forecast_df['forecast_progress'] = 0
 
-                        # --- 2. 挽回必要ライン (Recovery: 残予算均等配分) ---
                         remaining_budget = target_budget_graph - latest_cum_gross
                         if remaining_budget < 0: remaining_budget = 0
-                        
                         req_daily_gross = remaining_budget / days_remaining
-                        req_daily_click = req_daily_gross / 100 # CPC100円仮定
-                        
+                        req_daily_click = req_daily_gross / 100 
                         recovery_values_gross = [latest_cum_gross + (req_daily_gross * i) for i in range(1, days_remaining + 1)]
                         recovery_values_click = [latest_cum_click + (req_daily_click * i) for i in range(1, days_remaining + 1)]
                         
@@ -343,59 +383,62 @@ if st.sidebar.button("データ取得"):
                         else:
                             recovery_df['recovery_progress'] = 0
 
-                    # ========================================================
-                    # グラフ描画
-                    # ========================================================
-                    fig = make_subplots(
+                    st.subheader("① 予算・ボリューム分析")
+                    fig1 = make_subplots(
                         rows=3, cols=1, 
                         shared_xaxes=True, 
                         vertical_spacing=0.08,
-                        subplot_titles=(
-                            f"[{graph_title_prefix}] 進捗率の推移 (実績 vs 予測 vs 必要)", 
-                            f"[{graph_title_prefix}] 累積Click推移 (実績 vs 予測 vs 必要)",
-                            f"[{graph_title_prefix}] 日別Click推移 (実績 vs 必要)"
-                        ),
-                        specs=[
-                            [{"secondary_y": False}], 
-                            [{"secondary_y": True}],
-                            [{"secondary_y": True}]
-                        ]
+                        subplot_titles=(f"進捗率の推移", f"累積Click推移", f"日別Click推移"),
+                        specs=[[{"secondary_y": False}], [{"secondary_y": True}], [{"secondary_y": True}]]
                     )
-
-                    # --- 1段目 ---
-                    fig.add_trace(go.Scatter(x=ideal_df['date'], y=ideal_df['ideal_progress'], mode='lines', name='理想線', line=dict(color='lightgray', dash='dot')), row=1, col=1)
-                    fig.add_trace(go.Scatter(x=target_data['target_date'], y=target_data['actual_progress'], mode='lines+markers', name='実績', line=dict(color='red', width=3)), row=1, col=1)
+                    fig1.add_trace(go.Scatter(x=ideal_df['date'], y=ideal_df['ideal_progress'], mode='lines', name='理想線', line=dict(color='lightgray', dash='dot')), row=1, col=1)
+                    fig1.add_trace(go.Scatter(x=target_data['target_date'], y=target_data['actual_progress'], mode='lines+markers', name='実績', line=dict(color='red', width=3)), row=1, col=1)
                     if not forecast_df.empty:
-                        fig.add_trace(go.Scatter(x=forecast_df['date'], y=forecast_df['forecast_progress'], mode='lines', name='予測(現状維持)', line=dict(color='green', dash='dot')), row=1, col=1)
+                        fig1.add_trace(go.Scatter(x=forecast_df['date'], y=forecast_df['forecast_progress'], mode='lines', name='予測(現状維持)', line=dict(color='green', dash='dot')), row=1, col=1)
                     if not recovery_df.empty:
-                        fig.add_trace(go.Scatter(x=recovery_df['date'], y=recovery_df['recovery_progress'], mode='lines', name='必要ペース', line=dict(color='deeppink', dash='dot')), row=1, col=1)
+                        fig1.add_trace(go.Scatter(x=recovery_df['date'], y=recovery_df['recovery_progress'], mode='lines', name='必要ペース', line=dict(color='deeppink', dash='dot')), row=1, col=1)
 
-                    # --- 2段目 ---
-                    fig.add_trace(go.Scatter(x=ideal_df['date'], y=ideal_df['ideal_cum_click'], name='理想累積(CPC100円)', mode='lines', line=dict(color='lightgray', dash='dot')), row=2, col=1, secondary_y=True)
-                    fig.add_trace(go.Scatter(x=target_data['target_date'], y=target_data['cum_click'], name='実績累積Click', mode='lines+markers', line=dict(color='orange', width=2)), row=2, col=1, secondary_y=True)
+                    fig1.add_trace(go.Scatter(x=ideal_df['date'], y=ideal_df['ideal_cum_click'], name='理想累積(CPC100円)', mode='lines', line=dict(color='lightgray', dash='dot')), row=2, col=1, secondary_y=True)
+                    fig1.add_trace(go.Scatter(x=target_data['target_date'], y=target_data['cum_click'], name='実績累積Click', mode='lines+markers', line=dict(color='orange', width=2)), row=2, col=1, secondary_y=True)
                     if not forecast_df.empty:
-                        fig.add_trace(go.Scatter(x=forecast_df['date'], y=forecast_df['forecast_cum_click'], name='予測累積Click', mode='lines', line=dict(color='green', dash='dot')), row=2, col=1, secondary_y=True)
+                        fig1.add_trace(go.Scatter(x=forecast_df['date'], y=forecast_df['forecast_cum_click'], name='予測累積Click', mode='lines', line=dict(color='green', dash='dot')), row=2, col=1, secondary_y=True)
                     if not recovery_df.empty:
-                        fig.add_trace(go.Scatter(x=recovery_df['date'], y=recovery_df['recovery_cum_click'], name='必要累積Click', mode='lines', line=dict(color='deeppink', dash='dot')), row=2, col=1, secondary_y=True)
-                    
-                    fig.add_trace(go.Bar(x=target_data['target_date'], y=target_data['cum_imp'], name='実績累積IMP', opacity=0.1, marker_color='gray'), row=2, col=1, secondary_y=False)
+                        fig1.add_trace(go.Scatter(x=recovery_df['date'], y=recovery_df['recovery_cum_click'], name='必要累積Click', mode='lines', line=dict(color='deeppink', dash='dot')), row=2, col=1, secondary_y=True)
+                    fig1.add_trace(go.Bar(x=target_data['target_date'], y=target_data['cum_imp'], name='実績累積IMP', opacity=0.1, marker_color='gray'), row=2, col=1, secondary_y=False)
 
-                    # --- 3段目 ---
-                    fig.add_trace(go.Scatter(x=target_data['target_date'], y=target_data['click'], name='日別Click', mode='lines+markers', line=dict(color='navy', width=2)), row=3, col=1, secondary_y=True)
-                    fig.add_trace(go.Scatter(x=ideal_df['date'], y=ideal_df['ideal_daily_click'], name='理想日別(CPC100円)', mode='lines', line=dict(color='lightgray', dash='dot')), row=3, col=1, secondary_y=True)
+                    fig1.add_trace(go.Scatter(x=target_data['target_date'], y=target_data['click'], name='日別Click', mode='lines+markers', line=dict(color='navy', width=2)), row=3, col=1, secondary_y=True)
+                    fig1.add_trace(go.Scatter(x=ideal_df['date'], y=ideal_df['ideal_daily_click'], name='理想日別(CPC100円)', mode='lines', line=dict(color='lightgray', dash='dot')), row=3, col=1, secondary_y=True)
                     if not recovery_df.empty:
-                        fig.add_trace(go.Scatter(x=recovery_df['date'], y=recovery_df['req_daily_click'], name='明日からの必要数', mode='lines', line=dict(color='deeppink', dash='dot', width=2)), row=3, col=1, secondary_y=True)
+                        fig1.add_trace(go.Scatter(x=recovery_df['date'], y=recovery_df['req_daily_click'], name='明日からの必要数', mode='lines', line=dict(color='deeppink', dash='dot', width=2)), row=3, col=1, secondary_y=True)
+                    fig1.add_trace(go.Bar(x=target_data['target_date'], y=target_data['impression'], name='日別IMP', opacity=0.4, marker_color='lightblue'), row=3, col=1, secondary_y=False)
 
-                    fig.add_trace(go.Bar(x=target_data['target_date'], y=target_data['impression'], name='日別IMP', opacity=0.4, marker_color='lightblue'), row=3, col=1, secondary_y=False)
+                    fig1.update_layout(height=900, showlegend=True, hovermode="x unified")
+                    fig1.update_yaxes(title_text="進捗率 (%)", range=[0, 110], row=1, col=1)
+                    fig1.update_yaxes(title_text="累積IMP", row=2, col=1, secondary_y=False)
+                    fig1.update_yaxes(title_text="累積Click", row=2, col=1, secondary_y=True)
+                    fig1.update_yaxes(title_text="日別IMP", row=3, col=1, secondary_y=False)
+                    fig1.update_yaxes(title_text="日別Click", row=3, col=1, secondary_y=True)
+                    st.plotly_chart(fig1, use_container_width=True)
 
-                    fig.update_layout(height=1100, showlegend=True, hovermode="x unified")
-                    
-                    fig.update_yaxes(title_text="進捗率 (%)", range=[0, 110], row=1, col=1)
-                    fig.update_yaxes(title_text="累積IMP", row=2, col=1, secondary_y=False)
-                    fig.update_yaxes(title_text="累積Click", row=2, col=1, secondary_y=True)
-                    fig.update_yaxes(title_text="日別IMP", row=3, col=1, secondary_y=False)
-                    fig.update_yaxes(title_text="日別Click", row=3, col=1, secondary_y=True)
+                    st.subheader("② 効率・品質分析（CTR & CPM）")
+                    fig2 = make_subplots(
+                        rows=2, cols=1, 
+                        shared_xaxes=True, 
+                        vertical_spacing=0.1,
+                        subplot_titles=(f"CTR(クリック率)推移", f"コスト効率分析 [CPM vs CTR]"),
+                        specs=[[{"secondary_y": False}], [{"secondary_y": True}]]
+                    )
+                    fig2.add_trace(go.Scatter(x=target_data['target_date'], y=target_data['daily_ctr'], name='日別CTR', mode='lines+markers', line=dict(color='blue', width=2)), row=1, col=1)
+                    fig2.add_trace(go.Scatter(x=target_data['target_date'], y=target_data['cum_ctr'], name='累計CTR', mode='lines', line=dict(color='orange', dash='dot', width=2)), row=1, col=1)
 
-                    st.plotly_chart(fig, use_container_width=True)
+                    fig2.add_trace(go.Bar(x=target_data['target_date'], y=target_data['daily_cpm'], name='日別CPM', opacity=0.6, marker_color='purple'), row=2, col=1, secondary_y=False)
+                    fig2.add_trace(go.Scatter(x=target_data['target_date'], y=target_data['daily_ctr'], name='日別CTR', mode='lines+markers', line=dict(color='blue', width=2)), row=2, col=1, secondary_y=True)
+
+                    fig2.update_layout(height=700, showlegend=True, hovermode="x unified")
+                    fig2.update_yaxes(title_text="CTR (%)", row=1, col=1)
+                    fig2.update_yaxes(title_text="CPM (円)", row=2, col=1, secondary_y=False)
+                    fig2.update_yaxes(title_text="CTR (%)", row=2, col=1, secondary_y=True)
+                    st.plotly_chart(fig2, use_container_width=True)
+
                 else:
                     st.info("📊 グラフを表示するためのデータがありません。")
